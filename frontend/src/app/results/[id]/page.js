@@ -23,20 +23,22 @@ export default function ResultsPage() {
 
   useEffect(() => {
     const run = async () => {
-      if (!isAuthenticated()) {
-        router.replace("/login");
-        return;
-      }
-
       try {
+        const authenticated = await isAuthenticated();
+        if (!authenticated) {
+          await clearAuthSession();
+          router.replace("/login");
+          return;
+        }
+
         const valid = await validateSession();
         if (!valid) {
-          clearAuthSession();
+          await clearAuthSession();
           router.replace("/login");
           return;
         }
       } catch {
-        clearAuthSession();
+        await clearAuthSession();
         router.replace("/login");
         return;
       }
@@ -54,7 +56,7 @@ export default function ResultsPage() {
       const res = await authenticatedFetch(`/api/analyses/${id}`);
 
       if (res.status === 401) {
-        clearAuthSession();
+        await clearAuthSession();
         router.replace("/login");
         return;
       }

@@ -105,6 +105,7 @@ export async function checkHealth() {
 export async function login(email, password) {
   const response = await fetch(`${API_BASE}/login`, {
     method: "POST",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },

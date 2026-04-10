@@ -1,15 +1,28 @@
 """
 main.py — FastAPI backend for CADguard.
 Handles file uploads, CAD analysis, and serves results.
+
+Integrates the production ML pipeline for:
+- Continuous risk scoring (penalty + ML blend)
+- SHAP-based explainability
+- Top failure reason ranking
+- Confidence scoring
+- Feature interaction handling
 """
 
 import os
+import sys
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Add backend dir to path for ml package imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import internal modules
 from model_loader import predict
@@ -39,8 +52,8 @@ CORS_ORIGINS = [
 
 app = FastAPI(
     title="CADguard API",
-    description="AI-powered CAD validation and DFM analysis",
-    version="1.0.0",
+    description="AI-powered CAD validation and DFM analysis with explainable ML",
+    version="2.0.0",
 )
 
 # CORS configuration for Next.js frontend
@@ -55,11 +68,35 @@ app.add_middleware(
 app.include_router(auth_router)
 
 
+# --- Pydantic Models for Direct Analysis ---
+class DirectAnalysisRequest(BaseModel):
+    """Request model for direct feature analysis (no file upload)."""
+    wall_thickness: float = Field(..., gt=0, description="Wall thickness in mm")
+    draft_angle: float = Field(..., ge=0, description="Draft angle in degrees")
+    corner_radius: float = Field(..., ge=0, description="Corner radius in mm")
+    aspect_ratio: float = Field(..., gt=0, description="Aspect ratio")
+    undercut_present: int = Field(..., ge=0, le=1, description="0 or 1")
+    wall_uniformity: float = Field(..., ge=0, le=1, description="0 to 1")
+    material: Optional[str] = Field(default="ABS", description="Material type")
+
+
 # --- Health Check ---
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "CADguard API"}
+    model_status = "loaded"
+    try:
+        from model_loader import get_model
+        get_model()
+    except Exception:
+        model_status = "not_loaded"
+
+    return {
+        "status": "healthy",
+        "service": "CADguard API",
+        "model_status": model_status,
+        "version": "2.0.0",
+    }
 
 
 # --- Materials List ---
@@ -80,12 +117,12 @@ async def analyze_file(
     Main analysis pipeline:
     1. Read uploaded file
     2. Extract/simulate features
-    3. Predict risk score
+    3. Predict risk score (ML + continuous scoring)
     4. Compute SHAP values
     5. Check DFM violations
     6. Generate recommendations
     7. Store in database
-    8. Return complete results
+    8. Return complete results with explainability
     """
     try:
         # 1. Read file bytes
@@ -95,13 +132,27 @@ async def analyze_file(
         # 2. Extract features
         features = extract_features(file_bytes, filename, material)
 
-        # 3. Predict risk
+        # 3. Predict risk (uses new ML pipeline with blended scoring)
         prediction = predict(features)
         risk_score = prediction["risk_score"]
         risk_label = prediction["risk_label"]
 
-        # 4. Compute SHAP values
-        shap_result = compute_shap_values(features)
+        # 4. Compute SHAP values (prediction already contains SHAP,
+        #    but we recompute for consistency with existing API)
+        shap_result = {
+            "shap_values": prediction.get("shap_values", {}),
+            "base_value": prediction.get("shap_base_value", 0.0),
+            "feature_values": prediction.get("features", features),
+            "feature_labels": {
+                "wall_thickness": "Wall Thickness",
+                "draft_angle": "Draft Angle",
+                "corner_radius": "Corner Radius",
+                "aspect_ratio": "Aspect Ratio",
+                "undercut_present": "Undercut Present",
+                "wall_uniformity": "Wall Uniformity",
+                "material_encoded": "Material Type",
+            },
+        }
 
         # 5. Check violations
         violations = check_violations(features)
@@ -128,7 +179,7 @@ async def analyze_file(
             recommendations=recommendation,
         )
 
-        # 8. Return complete response
+        # 8. Return complete response with all ML pipeline outputs
         return {
             "id": stored.get("id"),
             "file_name": filename,
@@ -136,15 +187,86 @@ async def analyze_file(
             "risk_score": risk_score,
             "risk_label": risk_label,
             "probability": prediction["probability"],
+            "confidence": prediction.get("confidence", 0.5),
+            "top_issues": prediction.get("top_issues", []),
             "features": features,
             "violations": violations,
             "shap_values": shap_result,
             "recommendations": recommendation,
+            "penalty_breakdown": prediction.get("penalty_breakdown", {}),
             "created_at": stored.get("created_at"),
         }
 
     except FileNotFoundError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Validation error: {str(e)}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
+        )
+
+
+# --- Direct Analysis (no file upload) ---
+@app.post("/api/analyze/direct")
+async def analyze_direct(
+    request: DirectAnalysisRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Analyze manufacturing features directly (without file upload).
+
+    Accepts feature values directly and returns:
+    - risk_score (0-100)
+    - risk_label (LOW/MEDIUM/HIGH)
+    - confidence (0-1)
+    - top_issues (ranked failure reasons)
+    - shap_values (feature contributions)
+    - penalty_breakdown (continuous scoring details)
+    """
+    try:
+        features = {
+            "wall_thickness": request.wall_thickness,
+            "draft_angle": request.draft_angle,
+            "corner_radius": request.corner_radius,
+            "aspect_ratio": request.aspect_ratio,
+            "undercut_present": request.undercut_present,
+            "wall_uniformity": request.wall_uniformity,
+            "material": request.material,
+        }
+
+        # Run full prediction pipeline
+        prediction = predict(features)
+
+        # Check violations
+        features_for_violations = features.copy()
+        features_for_violations["material_encoded"] = prediction["features"].get(
+            "material_encoded", 0
+        )
+        violations = check_violations(features_for_violations)
+
+        return {
+            "risk_score": prediction["risk_score"],
+            "risk_label": prediction["risk_label"],
+            "probability": prediction["probability"],
+            "confidence": prediction.get("confidence", 0.5),
+            "top_issues": prediction.get("top_issues", []),
+            "shap_values": prediction.get("shap_values", {}),
+            "features": prediction.get("features", features),
+            "violations": violations,
+            "penalty_breakdown": prediction.get("penalty_breakdown", {}),
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Validation error: {str(e)}")
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model not available: {str(e)}. Run 'python -m ml.train' first."
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

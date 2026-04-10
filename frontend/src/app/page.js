@@ -21,21 +21,23 @@ export default function HomePage() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      if (!isAuthenticated()) {
-        router.replace("/login");
-        return;
-      }
-
       try {
+        const authenticated = await isAuthenticated();
+        if (!authenticated) {
+          await clearAuthSession();
+          router.replace("/login");
+          return;
+        }
+
         const valid = await validateSession();
         if (!valid) {
-          clearAuthSession();
+          await clearAuthSession();
           router.replace("/login");
           return;
         }
         setAuthChecked(true);
       } catch {
-        clearAuthSession();
+        await clearAuthSession();
         router.replace("/login");
       }
     };
@@ -83,7 +85,7 @@ export default function HomePage() {
       setProgress(100);
 
       if (response.status === 401) {
-        clearAuthSession();
+        await clearAuthSession();
         router.replace("/login");
         return;
       }

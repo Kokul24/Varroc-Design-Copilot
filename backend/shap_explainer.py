@@ -1,13 +1,22 @@
 """
-shap_explainer.py — Compute SHAP values for model explainability.
-Uses TreeExplainer for tree-based models, with KernelExplainer as fallback.
+shap_explainer.py — SHAP explainability module.
+
+Now delegates to ml.inference for SHAP computation, maintaining
+the same public interface for main.py and other modules.
 """
 
+import os
+import sys
 import numpy as np
-import shap
-from model_loader import get_model
 
-# Feature names in the correct order
+# Ensure ml package is importable
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from ml.inference import _compute_shap_safe, _build_feature_vector, _load_model
+from ml.inference import _feature_columns
+from ml.utils import compute_continuous_penalties
+
+# Feature names in the correct order (for backward compatibility)
 FEATURE_NAMES = [
     "wall_thickness",
     "draft_angle",
@@ -27,41 +36,18 @@ FEATURE_LABELS = {
     "undercut_present": "Undercut Present",
     "wall_uniformity": "Wall Uniformity",
     "material_encoded": "Material Type",
+    "wall_ar_interaction": "Wall-AR Interaction",
+    "draft_undercut_interaction": "Draft-Undercut Interaction",
+    "wall_uniformity_interaction": "Wall-Uniformity Interaction",
 }
-
-_explainer = None
-
-
-def _get_explainer():
-    """Create and cache the SHAP explainer."""
-    global _explainer
-    if _explainer is None:
-        model = get_model()
-        try:
-            # Try TreeExplainer first (works for tree-based models like RF, GBM, XGBoost)
-            _explainer = shap.TreeExplainer(model)
-        except Exception:
-            # Fallback to KernelExplainer for other model types
-            # Create a small background dataset for KernelExplainer
-            background = np.array([
-                [2.0, 3.0, 1.0, 3.0, 0, 0.8, 1],
-                [1.0, 1.0, 0.3, 8.0, 1, 0.4, 0],
-                [5.0, 5.0, 2.5, 2.0, 0, 0.9, 2],
-                [0.8, 0.5, 0.2, 12.0, 1, 0.3, 3],
-                [3.0, 2.0, 1.5, 5.0, 0, 0.7, 1],
-            ])
-            predict_fn = (
-                model.predict_proba
-                if hasattr(model, "predict_proba")
-                else model.predict
-            )
-            _explainer = shap.KernelExplainer(predict_fn, background)
-    return _explainer
 
 
 def compute_shap_values(features: dict) -> dict:
     """
     Compute SHAP values for a single prediction.
+
+    Uses TreeExplainer for tree-based models with KernelExplainer fallback.
+    If SHAP computation fails entirely, uses penalty-based explanation.
 
     Args:
         features: Dictionary of feature name → value
@@ -71,43 +57,35 @@ def compute_shap_values(features: dict) -> dict:
             - shap_values: {feature_name: contribution_value}
             - base_value: model's expected output
             - feature_values: {feature_name: actual_value}
+            - feature_labels: {feature_name: display_name}
     """
-    model = get_model()
-    explainer = _get_explainer()
+    try:
+        # Try to use the ML inference pipeline's SHAP computation
+        _load_model()
+        feature_vector = _build_feature_vector(features)
+        penalty_result = compute_continuous_penalties(features)
 
-    # Build feature vector
-    feature_vector = np.array([[features[f] for f in FEATURE_NAMES]])
+        result = _compute_shap_safe(feature_vector, features, penalty_result)
+        return result
 
-    # Compute SHAP values
-    shap_values = explainer.shap_values(feature_vector)
+    except Exception as e:
+        print(f"[shap_explainer] SHAP computation failed: {e}")
+        # Fallback: return penalty-based pseudo-SHAP values
+        penalty_result = compute_continuous_penalties(features)
 
-    # Handle multi-output (e.g., for classifiers with predict_proba)
-    if isinstance(shap_values, list):
-        # Use SHAP values for the positive class (class 1 = high risk)
-        sv = shap_values[1][0] if len(shap_values) > 1 else shap_values[0][0]
-    else:
-        sv = shap_values[0]
+        shap_dict = {
+            "wall_thickness": penalty_result.get("penalty_wall", 0.0),
+            "draft_angle": penalty_result.get("penalty_draft", 0.0),
+            "corner_radius": penalty_result.get("penalty_corner", 0.0),
+            "aspect_ratio": penalty_result.get("penalty_ar", 0.0),
+            "undercut_present": penalty_result.get("penalty_undercut", 0.0),
+            "wall_uniformity": penalty_result.get("penalty_uniformity", 0.0),
+            "material_encoded": 0.0,
+        }
 
-    # Get base value
-    if hasattr(explainer, "expected_value"):
-        base_value = explainer.expected_value
-        if isinstance(base_value, (list, np.ndarray)):
-            base_value = float(base_value[1]) if len(base_value) > 1 else float(base_value[0])
-        else:
-            base_value = float(base_value)
-    else:
-        base_value = 0.5
-
-    # Build result dictionary
-    shap_dict = {}
-    feature_val_dict = {}
-    for i, fname in enumerate(FEATURE_NAMES):
-        shap_dict[fname] = round(float(sv[i]), 4)
-        feature_val_dict[fname] = features[fname]
-
-    return {
-        "shap_values": shap_dict,
-        "base_value": round(base_value, 4),
-        "feature_values": feature_val_dict,
-        "feature_labels": FEATURE_LABELS,
-    }
+        return {
+            "shap_values": shap_dict,
+            "base_value": 50.0,
+            "feature_values": {k: features.get(k, 0) for k in FEATURE_NAMES},
+            "feature_labels": FEATURE_LABELS,
+        }

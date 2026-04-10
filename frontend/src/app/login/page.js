@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { login } from "@/lib/api";
-import { isAuthenticated, setAuthSession } from "@/lib/auth";
+import { isAuthenticated } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -13,9 +13,14 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated()) {
-      router.replace("/");
-    }
+    const checkSession = async () => {
+      const authenticated = await isAuthenticated();
+      if (authenticated) {
+        router.replace("/");
+      }
+    };
+
+    checkSession();
   }, [router]);
 
   const handleLogin = async (e) => {
@@ -24,7 +29,6 @@ export default function LoginPage() {
     try {
       setLoading(true);
       const result = await login(email, password);
-      setAuthSession(result.token, result.user);
       toast.success(`Welcome ${result.user.full_name || result.user.email}`);
       router.push("/");
     } catch (error) {

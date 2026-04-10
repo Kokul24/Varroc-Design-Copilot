@@ -1,46 +1,49 @@
-export const AUTH_TOKEN_KEY = "cadguard_token";
-export const AUTH_USER_KEY = "cadguard_user";
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "http://localhost:8000";
 
-export function getAuthToken() {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(AUTH_TOKEN_KEY);
+export async function isAuthenticated() {
+  return validateSession();
 }
 
-export function isAuthenticated() {
-  return Boolean(getAuthToken());
-}
-
-export function setAuthSession(token, user) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
-  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-}
-
-export function clearAuthSession() {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(AUTH_USER_KEY);
-}
-
-export async function authenticatedFetch(path, options = {}) {
-  const token = getAuthToken();
-  if (!token) {
-    throw new Error("Missing authentication token");
+export async function clearAuthSession() {
+  try {
+    await fetch(`${API_BASE}/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // Ignore network errors during logout cleanup.
   }
+}
 
+async function refreshSession() {
+  const response = await fetch(`${API_BASE}/refresh`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return response.ok;
+}
+
+export async function authenticatedFetch(path, options = {}, retry = true) {
   const mergedOptions = {
     ...options,
+    credentials: "include",
     headers: {
       ...(options.headers || {}),
-      Authorization: `Bearer ${token}`,
     },
   };
 
-  return fetch(`${API_BASE}${path}`, mergedOptions);
+  const response = await fetch(`${API_BASE}${path}`, mergedOptions);
+  if (response.status === 401 && retry) {
+    const refreshed = await refreshSession();
+    if (refreshed) {
+      return authenticatedFetch(path, options, false);
+    }
+  }
+
+  return response;
 }
 
 export async function validateSession() {

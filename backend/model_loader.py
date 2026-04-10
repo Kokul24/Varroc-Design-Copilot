@@ -1,33 +1,33 @@
 """
-model_loader.py — Load pre-trained model and make predictions.
-Handles loading model.pkl and computing risk scores + probabilities.
+model_loader.py — Bridge module: connects existing API to the new ML inference pipeline.
+
+This module maintains the same public interface (predict, get_model) that main.py
+and other modules use, but delegates to the production ML pipeline in ml/inference.py.
 """
 
 import os
-import joblib
-import numpy as np
+import sys
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
+# Add the backend directory to path so ml package is importable
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_model = None
+from ml.inference import predict as ml_predict, get_model as ml_get_model
 
 
 def get_model():
-    """Load and cache the pre-trained model."""
-    global _model
-    if _model is None:
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(
-                f"Model file not found at {MODEL_PATH}. "
-                "Run 'python create_mock_model.py' to generate a demo model."
-            )
-        _model = joblib.load(MODEL_PATH)
-    return _model
+    """
+    Load and cache the pre-trained model.
+    Delegates to ml.inference for consistent model management.
+    """
+    return ml_get_model()
 
 
 def predict(features: dict) -> dict:
     """
-    Make a prediction using the pre-trained model.
+    Make a prediction using the trained ML pipeline.
+
+    This wraps ml.inference.predict() and adapts the output to
+    match the format expected by main.py and the rest of the backend.
 
     Args:
         features: Dictionary with keys:
@@ -35,43 +35,26 @@ def predict(features: dict) -> dict:
             undercut_present, wall_uniformity, material_encoded
 
     Returns:
-        Dictionary with risk_score, probability, and risk_label.
+        Dictionary with risk_score, probability, risk_label,
+        confidence, top_issues, shap_values, etc.
     """
-    model = get_model()
+    # The new pipeline returns a comprehensive result dict
+    result = ml_predict(features)
 
-    # Build feature vector in the correct order
-    feature_order = [
-        "wall_thickness",
-        "draft_angle",
-        "corner_radius",
-        "aspect_ratio",
-        "undercut_present",
-        "wall_uniformity",
-        "material_encoded",
-    ]
-    feature_vector = np.array([[features[f] for f in feature_order]])
-
-    # Predict probability of high-risk
-    if hasattr(model, "predict_proba"):
-        probabilities = model.predict_proba(feature_vector)[0]
-        # probability of being high-risk (class 1)
-        risk_probability = float(probabilities[1]) if len(probabilities) > 1 else float(probabilities[0])
-    else:
-        risk_probability = float(model.predict(feature_vector)[0])
-
-    # Convert probability to risk score (0–100)
-    risk_score = round(risk_probability * 100, 1)
-
-    # Determine risk label
-    if risk_score < 40:
-        risk_label = "LOW"
-    elif risk_score <= 70:
-        risk_label = "MEDIUM"
-    else:
-        risk_label = "HIGH"
-
+    # Return full result — main.py can use any fields it needs
+    # Also ensure backward compatibility with the original interface
     return {
-        "risk_score": risk_score,
-        "probability": round(risk_probability, 4),
-        "risk_label": risk_label,
+        # Original fields expected by main.py
+        "risk_score": result["risk_score"],
+        "probability": result["probability"],
+        "risk_label": result["risk_label"],
+        # New fields from the production pipeline
+        "confidence": result["confidence"],
+        "top_issues": result["top_issues"],
+        "shap_values": result["shap_values"],
+        "shap_base_value": result.get("shap_base_value", 0.0),
+        "penalty_breakdown": result.get("penalty_breakdown", {}),
+        "ml_risk_score": result.get("ml_risk_score"),
+        "penalty_risk_score": result.get("penalty_risk_score"),
+        "features": result.get("features", features),
     }
