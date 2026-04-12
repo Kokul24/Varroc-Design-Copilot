@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 /**
  * MaterialSelector — Dropdown with visual material cards.
@@ -42,6 +42,7 @@ const MATERIAL_DESCRIPTIONS = {
 export default function MaterialSelector({ value, onChange, disabled }) {
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
   const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef(null);
 
   useEffect(() => {
     // Try to fetch materials from API, fallback to defaults
@@ -55,10 +56,25 @@ export default function MaterialSelector({ value, onChange, disabled }) {
       });
   }, []);
 
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleOutsideClick = (event) => {
+      if (rootRef.current && !rootRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isOpen]);
+
   const selected = materials.find((m) => m.value === value) || materials[0];
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <label className="block text-sm font-medium text-slate-300 mb-2">
         Material Type
       </label>
@@ -102,7 +118,7 @@ export default function MaterialSelector({ value, onChange, disabled }) {
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 w-full mt-2 glass-card p-2 animate-fade-in max-h-64 overflow-y-auto">
+        <div className="w-full mt-2 glass-card p-2 animate-fade-in max-h-64 overflow-y-auto border border-brand-500/20">
           {materials.map((mat) => (
             <button
               key={mat.value}
@@ -146,14 +162,6 @@ export default function MaterialSelector({ value, onChange, disabled }) {
             </button>
           ))}
         </div>
-      )}
-
-      {/* Click outside to close */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => setIsOpen(false)}
-        />
       )}
     </div>
   );
