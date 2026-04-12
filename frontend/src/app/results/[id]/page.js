@@ -166,6 +166,14 @@ export default function ResultsPage() {
 
   if (!data) return null;
 
+  const topIssues = Array.isArray(data.top_issues) ? data.top_issues : [];
+  const estimatedCostImpact = Number.isFinite(Number(data.estimated_cost_impact))
+    ? Math.max(0, Number(data.estimated_cost_impact))
+    : 0;
+  const costBreakdown = Array.isArray(data.cost_breakdown) && data.cost_breakdown.length > 0
+    ? data.cost_breakdown
+    : ["Minimal additional tooling cost"];
+
   const formatDate = (dateStr) => {
     if (!dateStr) return "Just now";
     return new Date(dateStr).toLocaleString();
@@ -265,6 +273,60 @@ export default function ResultsPage() {
             )}
           </h3>
           <ViolationsList violations={data.violations} />
+
+          <div className="mt-5 pt-4 border-t border-slate-700/50">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+              Estimated Cost Impact
+            </h4>
+            <div className="text-lg font-semibold text-emerald-400">
+              ₹{estimatedCostImpact.toLocaleString("en-IN")}
+            </div>
+            <ul className="mt-3 space-y-1.5">
+              {costBreakdown.map((reason, idx) => (
+                <li key={idx} className="text-xs text-slate-400 flex items-start gap-2">
+                  <span className="text-brand-400 mt-0.5">•</span>
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      {/* Top Contributing Factors */}
+      <div className="glass-card p-6 mb-6 animate-slide-up" style={{ animationDelay: "350ms" }}>
+        <h3 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
+          <svg className="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.5l6-6 4.5 4.5L21 4.5M15 4.5H21v6" />
+          </svg>
+          Top Contributing Factors
+        </h3>
+
+        <div className="space-y-2">
+          {topIssues.length > 0 ? (
+            topIssues.slice(0, 3).map((issue, index) => {
+              const pct = Number.isFinite(Number(issue?.impact_pct))
+                ? Math.max(0, Math.min(100, Number(issue.impact_pct)))
+                : 0;
+              const name = issue?.feature || `Factor ${index + 1}`;
+              return (
+                <div key={`${name}-${index}`} className="glass-card-light p-3">
+                  <div className="flex items-center justify-between text-xs mb-2">
+                    <span className="text-slate-300 font-medium">{name}</span>
+                    <span className="text-brand-300 font-semibold">{pct}%</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-brand-500 to-brand-400"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-sm text-slate-500">No significant risk factors identified.</p>
+          )}
         </div>
       </div>
 

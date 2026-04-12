@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS public.analyses (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
+ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS top_issues JSONB;
+ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS estimated_cost_impact INTEGER DEFAULT 0;
+ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS cost_breakdown JSONB;
+
 -- Disable RLS so every query works without policies
 ALTER TABLE public.analyses DISABLE ROW LEVEL SECURITY;
 
@@ -113,6 +117,9 @@ def store_analysis(
     violations: list,
     shap_values: dict,
     recommendations: dict,
+    top_issues: list | None = None,
+    estimated_cost_impact: int = 0,
+    cost_breakdown: list | None = None,
 ) -> dict:
     """INSERT a new analysis record.  Returns the stored row."""
     if not _db_available():
@@ -126,6 +133,9 @@ def store_analysis(
             "violations": violations,
             "shap_values": shap_values,
             "recommendations": recommendations,
+            "top_issues": top_issues or [],
+            "estimated_cost_impact": max(0, int(estimated_cost_impact or 0)),
+            "cost_breakdown": cost_breakdown or ["Minimal additional tooling cost"],
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _fallback_store.insert(0, record)
@@ -135,8 +145,9 @@ def store_analysis(
 
     sql = """
         INSERT INTO analyses (file_name, material, risk_score, risk_label,
-                              features, violations, shap_values, recommendations)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                              features, violations, shap_values, recommendations,
+                              top_issues, estimated_cost_impact, cost_breakdown)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *;
     """
     with get_conn() as conn:
@@ -145,6 +156,9 @@ def store_analysis(
                 file_name, material, risk_score, risk_label,
                 Json(features), Json(violations),
                 Json(shap_values), Json(recommendations),
+                Json(top_issues or []),
+                max(0, int(estimated_cost_impact or 0)),
+                Json(cost_breakdown or ["Minimal additional tooling cost"]),
             ))
             row = cur.fetchone()
             return dict(row)
@@ -198,7 +212,14 @@ def update_analysis(analysis_id: str, updates: dict) -> dict | None:
         return None
 
     # Build dynamic SET clause
-    json_cols = {"features", "violations", "shap_values", "recommendations"}
+    json_cols = {
+        "features",
+        "violations",
+        "shap_values",
+        "recommendations",
+        "top_issues",
+        "cost_breakdown",
+    }
     set_parts = []
     values = []
     for col, val in updates.items():

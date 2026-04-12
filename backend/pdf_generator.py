@@ -505,7 +505,7 @@ def generate_analysis_pdf(analysis_data: dict) -> str:
             top_issues = [
                 {
                     "feature": _FEATURE_LABELS.get(name, (name, ""))[0],
-                    "contribution_pct": round(abs(val) / total_abs * 100, 1),
+                    "impact_pct": round(abs(val) / total_abs * 100, 1),
                 }
                 for name, val in sorted_shap
             ]
@@ -531,7 +531,10 @@ def generate_analysis_pdf(analysis_data: dict) -> str:
             feature_label = _FEATURE_LABELS.get(feature_name, (feature_name, ""))[0] \
                 if feature_name in _FEATURE_LABELS else feature_name
 
-            pct = issue.get("contribution_pct", issue.get("percentage", 0))
+            pct = issue.get(
+                "impact_pct",
+                issue.get("contribution_pct", issue.get("percentage", 0)),
+            )
 
             # Create a simple bar representation
             bar_width = int(pct / 5)  # Scale to ~20 chars max
@@ -576,68 +579,32 @@ def generate_analysis_pdf(analysis_data: dict) -> str:
     # ---------------------------------------------------------------
     elements.append(Paragraph("5. Cost Impact", styles["SectionHeading"]))
 
-    cost_impact = analysis_data.get("cost_impact", {})
-    if not cost_impact:
-        # Try to derive a reasonable cost impact message from available data
-        elements.append(
-            Paragraph(
-                "Detailed cost impact estimation is not available for this analysis. "
-                "Please refer to the violations and recommendations sections for "
-                "guidance on optimizing manufacturing costs.",
-                styles["Body"],
-            )
+    estimated_cost = analysis_data.get("estimated_cost_impact")
+    cost_breakdown = analysis_data.get("cost_breakdown")
+
+    if estimated_cost is None and isinstance(analysis_data.get("cost_impact"), dict):
+        legacy = analysis_data.get("cost_impact", {})
+        estimated_cost = legacy.get("estimated_cost", 0)
+        cost_breakdown = legacy.get("breakdown", [])
+
+    try:
+        estimated_cost = max(0, int(float(estimated_cost or 0)))
+    except (TypeError, ValueError):
+        estimated_cost = 0
+
+    if not isinstance(cost_breakdown, list) or not cost_breakdown:
+        cost_breakdown = ["Minimal additional tooling cost"]
+
+    elements.append(
+        Paragraph(
+            f'<b>Estimated Manufacturing Cost:</b> '
+            f'<font size="14" color="{_BRAND_PRIMARY.hexval()}"><b>₹{estimated_cost:,.0f}</b></font>',
+            styles["Body"],
         )
-    else:
-        estimated_cost = cost_impact.get("estimated_cost", "N/A")
-        cost_explanation = cost_impact.get("explanation", "")
-        cost_breakdown = cost_impact.get("breakdown", {})
+    )
 
-        if isinstance(estimated_cost, (int, float)):
-            cost_display = f"₹{estimated_cost:,.2f}"
-        else:
-            cost_display = str(estimated_cost)
-
-        elements.append(
-            Paragraph(
-                f'<b>Estimated Manufacturing Cost:</b> '
-                f'<font size="14" color="{_BRAND_PRIMARY.hexval()}"><b>{cost_display}</b></font>',
-                styles["Body"],
-            )
-        )
-
-        if cost_explanation:
-            elements.append(Paragraph(cost_explanation, styles["Body"]))
-
-        # Cost breakdown table if available
-        if cost_breakdown and isinstance(cost_breakdown, dict):
-            cost_rows = [
-                [
-                    Paragraph('<b>Component</b>', styles["Body"]),
-                    Paragraph('<b>Impact</b>', styles["Body"]),
-                ]
-            ]
-            for component, impact in cost_breakdown.items():
-                cost_rows.append([
-                    Paragraph(str(component).replace("_", " ").title(), styles["Body"]),
-                    Paragraph(str(impact), styles["Body"]),
-                ])
-
-            cost_table = Table(
-                cost_rows,
-                colWidths=[doc.width * 0.5, doc.width * 0.5],
-                hAlign="LEFT",
-            )
-            cost_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), _TABLE_HEADER),
-                ("TEXTCOLOR", (0, 0), (-1, 0), _WHITE),
-                ("BOX", (0, 0), (-1, -1), 0.5, _BORDER_COLOR),
-                ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER_COLOR),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-            ]))
-            elements.append(cost_table)
+    for reason in cost_breakdown:
+        elements.append(Paragraph(f"• {reason}", styles["Bullet"]))
 
     elements.append(Spacer(1, 3 * mm))
 

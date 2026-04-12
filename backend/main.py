@@ -36,6 +36,7 @@ from shap_explainer import compute_shap_values
 from recommendation_engine import generate_recommendation
 from pdf_generator import generate_analysis_pdf
 from chat_engine import chat_with_gemini
+from post_analysis import compute_top_issues, compute_cost_impact
 from supabase_client import (
     store_analysis,
     get_analysis,
@@ -218,7 +219,17 @@ async def analyze_file(
             material=material,
         )
 
-        # 7. Store in database
+        # 7. Post-analysis modules (run only after prediction + SHAP + violations)
+        top_issues = compute_top_issues(
+            shap_values=shap_result,
+            fallback_penalties=prediction.get("penalty_breakdown", {}),
+        )
+        estimated_cost_impact, cost_breakdown = compute_cost_impact(
+            features=features,
+            violations=violations,
+        )
+
+        # 8. Store in database
         stored = store_analysis(
             file_name=filename,
             material=material,
@@ -228,9 +239,12 @@ async def analyze_file(
             violations=violations,
             shap_values=shap_result,
             recommendations=recommendation,
+            top_issues=top_issues,
+            estimated_cost_impact=estimated_cost_impact,
+            cost_breakdown=cost_breakdown,
         )
 
-        # 8. Return complete response with all ML pipeline outputs
+        # 9. Return complete response with all ML pipeline outputs
         return {
             "id": stored.get("id"),
             "file_name": filename,
@@ -239,11 +253,13 @@ async def analyze_file(
             "risk_label": risk_label,
             "probability": prediction["probability"],
             "confidence": prediction.get("confidence", 0.5),
-            "top_issues": prediction.get("top_issues", []),
+            "top_issues": top_issues,
             "features": features,
             "violations": violations,
             "shap_values": shap_result,
             "recommendations": recommendation,
+            "estimated_cost_impact": estimated_cost_impact,
+            "cost_breakdown": cost_breakdown,
             "penalty_breakdown": prediction.get("penalty_breakdown", {}),
             "created_at": stored.get("created_at"),
         }
@@ -299,15 +315,26 @@ async def analyze_direct(
         )
         violations = check_violations(features_for_violations)
 
+        top_issues = compute_top_issues(
+            shap_values=prediction.get("shap_values", {}),
+            fallback_penalties=prediction.get("penalty_breakdown", {}),
+        )
+        estimated_cost_impact, cost_breakdown = compute_cost_impact(
+            features=prediction.get("features", features),
+            violations=violations,
+        )
+
         return {
             "risk_score": prediction["risk_score"],
             "risk_label": prediction["risk_label"],
             "probability": prediction["probability"],
             "confidence": prediction.get("confidence", 0.5),
-            "top_issues": prediction.get("top_issues", []),
+            "top_issues": top_issues,
             "shap_values": prediction.get("shap_values", {}),
             "features": prediction.get("features", features),
             "violations": violations,
+            "estimated_cost_impact": estimated_cost_impact,
+            "cost_breakdown": cost_breakdown,
             "penalty_breakdown": prediction.get("penalty_breakdown", {}),
         }
 
