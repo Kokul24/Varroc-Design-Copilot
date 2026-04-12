@@ -12,7 +12,11 @@ Integrates the production ML pipeline for:
 
 import os
 import sys
+import json
+import time
+from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -30,6 +34,8 @@ from feature_extractor import extract_features, get_material_list
 from violation_checker import check_violations
 from shap_explainer import compute_shap_values
 from recommendation_engine import generate_recommendation
+from pdf_generator import generate_analysis_pdf
+from chat_engine import chat_with_gemini
 from supabase_client import (
     store_analysis,
     get_analysis,
@@ -66,6 +72,47 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+
+def _log_stl_model_io(filename: str, material: str, features: dict, prediction: dict) -> None:
+    """
+    Print a presentation-friendly terminal log for STL analysis.
+    Shows model input features, calculation components, and final outputs.
+    """
+    ml_score = prediction.get("ml_risk_score")
+    penalty_score = prediction.get("penalty_risk_score")
+    blended_score = prediction.get("risk_score")
+    penalty_breakdown = prediction.get("penalty_breakdown", {})
+
+    calc_summary = {
+        "blend_formula": "blended_risk = 0.7 * ml_risk + 0.3 * penalty_risk",
+        "ml_risk_score": ml_score,
+        "penalty_risk_score": penalty_score,
+        "blended_risk_score": blended_score,
+        "risk_probability": prediction.get("probability"),
+        "confidence": prediction.get("confidence"),
+        "penalty_breakdown": penalty_breakdown,
+    }
+
+    output_summary = {
+        "risk_label": prediction.get("risk_label"),
+        "top_issues": prediction.get("top_issues", []),
+        "shap_values": prediction.get("shap_values", {}),
+    }
+
+    payload = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "file_name": filename,
+        "material": material,
+        "model_input_features": features,
+        "model_calculations": calc_summary,
+        "model_output": output_summary,
+    }
+
+    print("\n" + "=" * 88)
+    print("[CADguard][STL Upload] Model I/O and Calculations")
+    print(json.dumps(payload, indent=2, default=str))
+    print("=" * 88 + "\n", flush=True)
 
 
 # --- Pydantic Models for Direct Analysis ---
@@ -136,6 +183,10 @@ async def analyze_file(
         prediction = predict(features)
         risk_score = prediction["risk_score"]
         risk_label = prediction["risk_label"]
+
+        # Terminal logging for presentation: show model inputs and outputs for STL uploads.
+        if filename.lower().endswith(".stl"):
+            _log_stl_model_io(filename, material, features, prediction)
 
         # 4. Compute SHAP values (prediction already contains SHAP,
         #    but we recompute for consistency with existing API)
@@ -315,6 +366,118 @@ async def delete_analysis_by_id(analysis_id: str, current_user: dict = Depends(g
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return {"deleted": True, "id": analysis_id}
+
+
+# --- Generate PDF Report ---
+@app.get("/api/generate-pdf/{analysis_id}")
+async def generate_pdf(analysis_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Generate and download a professional PDF report for a given analysis.
+
+    Fetches the analysis record from the database, generates a formatted
+    PDF using reportlab, and returns it as a downloadable file.
+    """
+    # 1. Fetch the analysis from DB
+    analysis = get_analysis(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    try:
+        # 2. Generate the PDF
+        pdf_path = generate_analysis_pdf(analysis)
+
+        # 3. Build a readable filename
+        file_name = analysis.get("file_name", "analysis")
+        safe_name = "".join(
+            c if c.isalnum() or c in ("_", "-", ".") else "_"
+            for c in os.path.splitext(file_name)[0]
+        )
+        download_name = f"CADguard_Report_{safe_name}.pdf"
+
+        # 4. Return as downloadable response
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=download_name,
+            headers={
+                "Content-Disposition": f'attachment; filename="{download_name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF generation failed: {str(e)}"
+        )
+
+
+# --- Conversational Q&A (Gemini) ---
+class ChatMessage(BaseModel):
+    """A single message in the conversation history."""
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str = Field(..., description="Message content")
+
+
+class ChatRequest(BaseModel):
+    """Request model for the chat endpoint."""
+    message: str = Field(..., min_length=1, max_length=2000, description="User's question")
+    history: list[ChatMessage] = Field(default=[], description="Prior conversation turns")
+
+
+@app.post("/api/chat/{analysis_id}")
+async def chat_about_analysis(
+    analysis_id: str,
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Conversational Q&A powered by Gemini.
+
+    Users can ask questions about faults, violations, and improvements
+    for a specific analysis. Gemini responds with context-aware
+    engineering advice.
+    """
+    # 1. Fetch the analysis to seed context
+    analysis = get_analysis(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # 2. Convert history to dicts
+    history = [msg.model_dump() for msg in request.history]
+
+    try:
+        # 3. Call Gemini with full analysis context
+        response_text = chat_with_gemini(
+            user_message=request.message,
+            analysis_data=analysis,
+            conversation_history=history,
+        )
+
+        return {
+            "response": response_text,
+            "analysis_id": analysis_id,
+        }
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Chat service not configured: {str(e)}"
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI service error: {str(e)}"
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat failed: {str(e)}"
+        )
 
 
 # --- Run Server ---

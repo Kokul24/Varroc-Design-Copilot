@@ -9,6 +9,7 @@ import ShapChart from "@/components/ShapChart";
 import ViolationsList from "@/components/ViolationsList";
 import Recommendations from "@/components/Recommendations";
 import FeatureTable from "@/components/FeatureTable";
+import DfmChat from "@/components/DfmChat";
 import { authenticatedFetch, clearAuthSession, isAuthenticated, validateSession } from "@/lib/auth";
 
 /**
@@ -73,6 +74,52 @@ export default function ResultsPage() {
       toast.error(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  const [downloading, setDownloading] = useState(false);
+
+  async function downloadReport() {
+    if (!data?.id) return;
+    setDownloading(true);
+    try {
+      const res = await authenticatedFetch(`/api/generate-pdf/${data.id}`);
+
+      if (res.status === 401) {
+        await clearAuthSession();
+        router.replace("/login");
+        return;
+      }
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.detail || "Failed to generate report");
+      }
+
+      // Extract filename from Content-Disposition header or use default
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = `CADguard_Report_${data.file_name || "analysis"}.pdf`;
+      if (disposition) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match) filename = match[1];
+      }
+
+      // Download the blob
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+
+      toast.success("Report downloaded!");
+    } catch (err) {
+      toast.error(err.message || "Failed to download report");
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -150,6 +197,29 @@ export default function ResultsPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={downloadReport}
+            disabled={downloading}
+            className="btn-secondary text-sm py-2 px-4 flex items-center gap-2"
+            id="download-report-btn"
+          >
+            {downloading ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Generating...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                Download Report
+              </>
+            )}
+          </button>
           <Link href="/" className="btn-secondary text-sm py-2 px-4">
             New Analysis
           </Link>
@@ -211,6 +281,9 @@ export default function ResultsPage() {
         <span>•</span>
         <span>SHAP Base: {data.shap_values?.base_value?.toFixed(4) || "N/A"}</span>
       </div>
+
+      {/* DFM Chat Assistant */}
+      <DfmChat analysisId={data.id} violations={data.violations} />
     </div>
   );
 }
