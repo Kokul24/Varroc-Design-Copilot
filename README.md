@@ -1,4 +1,4 @@
-# CADguard — AI-Powered CAD Validation
+# Varroc Design Copilot  — AI-Powered CAD Validation
 
 <div align="center">
 
