@@ -235,6 +235,7 @@ async def analyze_file(
             material=material,
             risk_score=risk_score,
             risk_label=risk_label,
+            confidence=prediction.get("confidence", 0.5),
             features=features,
             violations=violations,
             shap_values=shap_result,
