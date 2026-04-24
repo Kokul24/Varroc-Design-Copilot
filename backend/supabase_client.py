@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS public.analyses (
     material    TEXT NOT NULL,
     risk_score  REAL NOT NULL,
     risk_label  TEXT NOT NULL,
+    confidence  REAL,
     features    JSONB,
     violations  JSONB,
     shap_values JSONB,
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS public.analyses (
 ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS top_issues JSONB;
 ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS estimated_cost_impact INTEGER DEFAULT 0;
 ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS cost_breakdown JSONB;
+ALTER TABLE public.analyses ADD COLUMN IF NOT EXISTS confidence REAL;
 
 -- Disable RLS so every query works without policies
 ALTER TABLE public.analyses DISABLE ROW LEVEL SECURITY;
@@ -113,6 +115,7 @@ def store_analysis(
     material: str,
     risk_score: float,
     risk_label: str,
+    confidence: float | None,
     features: dict,
     violations: list,
     shap_values: dict,
@@ -129,6 +132,7 @@ def store_analysis(
             "material": material,
             "risk_score": risk_score,
             "risk_label": risk_label,
+            "confidence": confidence,
             "features": features,
             "violations": violations,
             "shap_values": shap_values,
@@ -145,15 +149,17 @@ def store_analysis(
 
     sql = """
         INSERT INTO analyses (file_name, material, risk_score, risk_label,
+                              confidence,
                               features, violations, shap_values, recommendations,
                               top_issues, estimated_cost_impact, cost_breakdown)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *;
     """
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, (
                 file_name, material, risk_score, risk_label,
+                confidence,
                 Json(features), Json(violations),
                 Json(shap_values), Json(recommendations),
                 Json(top_issues or []),
