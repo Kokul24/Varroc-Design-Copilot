@@ -170,6 +170,9 @@ export default function ResultsPage() {
   const estimatedCostImpact = Number.isFinite(Number(data.estimated_cost_impact))
     ? Math.max(0, Number(data.estimated_cost_impact))
     : 0;
+  const confidenceScore = Number.isFinite(Number(data.confidence))
+    ? Math.max(0, Math.min(1, Number(data.confidence)))
+    : null;
   const costBreakdown = Array.isArray(data.cost_breakdown) && data.cost_breakdown.length > 0
     ? data.cost_breakdown
     : ["Minimal additional tooling cost"];
@@ -280,6 +283,9 @@ export default function ResultsPage() {
             </h4>
             <div className="text-lg font-semibold text-emerald-400">
               ₹{estimatedCostImpact.toLocaleString("en-IN")}
+            </div>
+            <div className="mt-1 text-xs text-slate-400">
+              Confidence Score: {confidenceScore != null ? `${(confidenceScore * 100).toFixed(2)}%` : "N/A"}
             </div>
             <ul className="mt-3 space-y-1.5">
               {costBreakdown.map((reason, idx) => (
